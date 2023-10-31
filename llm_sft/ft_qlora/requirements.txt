@@ -1,9 +1,9 @@
-transformers==4.30.0.dev0
-accelerate==0.20.0.dev0
+transformers==4.30.1
+accelerate==0.20.1
 bitsandbytes==0.39.0
-peft==0.4.0.dev0
+peft==0.4.0
 tensorboardX==2.6
-datasets==2.9.0
+datasets==2.14.6
 fastapi==0.94.1
 uvicorn==0.21.0
 torch==1.13.1

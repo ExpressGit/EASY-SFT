@@ -14,9 +14,11 @@ EPOCHS = 3  # default=3  # we don't always need 3 tbh
 # LORA_DROPOUT = 0.1
 # LORA_ALPHA = 32
 # LORA_R = 32
+
 LORA_DROPOUT = 0.05
 LORA_ALPHA = 16
 LORA_R = 8
+
 SAVE_STEPS = 382
 VAL_SET_SIZE = 0
 MAX_LENGTH_Q = 256 - 2  # default=128 - 2
@@ -24,7 +26,7 @@ MAX_LENGTH_A = 256 - 2  # default=128 - 2
 MAX_LENGTH_QA = MAX_LENGTH_Q + MAX_LENGTH_A + 2
 TARGET_MODULES = ["query_key_value"]
 
-PATH_MODEL_PRETRAIN = ""
+PATH_MODEL_PRETRAIN = "/root/autodl-tmp/chatglm-6b/"
 REPO_ID = "THUDM/chatglm-6b"
 PATH_MODEL_PRETRAIN = PATH_MODEL_PRETRAIN if PATH_MODEL_PRETRAIN else REPO_ID
 DATA_PATH = "../dataset/alpaca_gpt4_data_zh.json"
@@ -33,7 +35,7 @@ MODEL_SAVE_DIR = "model_sft"
 IS_PARALLELIZABLE = False
 MODEL_PARALLEL = False
 USE_CACHE = False
-CUDA_VISIBLE_DEVICES = "1"
+CUDA_VISIBLE_DEVICES = "0"
 USE_TORCH = "1"
 CPU_NUMS = "9"
 USE_CUDA = False if CUDA_VISIBLE_DEVICES == "-1" else True

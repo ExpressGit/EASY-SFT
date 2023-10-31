@@ -34,12 +34,12 @@ import torch.nn as nn
 import transformers
 import torch
 
-# from transformers import LlamaForCausalLM, LlamaModel
-# from transformers import LlamaTokenizer, LlamaConfig
+from transformers import LlamaForCausalLM, LlamaModel
+from transformers import LlamaTokenizer, LlamaConfig
 
-from llm_sft.models.llama.model import LlamaForCausalLM, LlamaModel
-from llm_sft.models.llama.tokenization_llama import LlamaTokenizer
-from llm_sft.models.llama.configuration_llama import LlamaConfig
+# from llm_sft.models.llama.model import LlamaForCausalLM, LlamaModel
+# from llm_sft.models.llama.tokenization_llama import LlamaTokenizer
+# from llm_sft.models.llama.configuration_llama import LlamaConfig
 from llm_sft.ft_qlora.config import PATH_MODEL_PRETRAIN, DATA_PATH, MODEL_SAVE_DIR, REPO_ID
 from llm_sft.ft_qlora.config import MICRO_BATCH_SIZE, BATCH_SIZE, GRADIENT_ACCUMULATION_STEPS
 from llm_sft.ft_qlora.config import LEARNING_RATE, EPOCHS, SAVE_STEPS, VAL_SET_SIZE, TARGET_MODULES

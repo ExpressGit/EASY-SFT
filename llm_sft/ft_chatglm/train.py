@@ -32,8 +32,10 @@ import torch.nn as nn
 import transformers
 import torch
 
-from llm_sft.models.chatglm.modeling_chatglm import ChatGLMForConditionalGeneration, ChatGLMConfig
+from llm_sft.models.chatglm.modeling_chatglm import ChatGLMForConditionalGeneration,ChatGLMConfig
 from llm_sft.models.chatglm.tokenization_chatglm import ChatGLMTokenizer
+
+
 from llm_sft.ft_chatglm.config import PATH_MODEL_PRETRAIN, DATA_PATH, MODEL_SAVE_DIR, REPO_ID
 from llm_sft.ft_chatglm.config import MICRO_BATCH_SIZE, BATCH_SIZE, GRADIENT_ACCUMULATION_STEPS
 from llm_sft.ft_chatglm.config import LEARNING_RATE, EPOCHS, SAVE_STEPS, VAL_SET_SIZE, TARGET_MODULES
@@ -259,7 +261,8 @@ print_named_parameters(model)
 model = model.cuda()
 print_named_parameters(model)
 
-tokenizer = ChatGLMTokenizer.from_pretrained(PATH_MODEL_PRETRAIN)  #, add_eos_token=True)
+# PATH_MODEL_PRETRAIN = "/root/autodl-tmp/chatglm-6b/"
+tokenizer = ChatGLMTokenizer.from_pretrained(PATH_MODEL_PRETRAIN)  
 # tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "left"  # Allow batched inference
 ID_gMASK = 130001

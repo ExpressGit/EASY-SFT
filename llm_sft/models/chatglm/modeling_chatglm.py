@@ -34,11 +34,11 @@ from .configuration_chatglm import ChatGLMConfig
 
 # flags required to enable jit fusion kernels
 
-# if sys.platform != 'darwin': # apple-system
-#     torch._C._jit_set_profiling_mode(False)
-#     torch._C._jit_set_profiling_executor(False)
-#     torch._C._jit_override_can_fuse_on_cpu(True)
-#     torch._C._jit_override_can_fuse_on_gpu(True)
+if sys.platform != 'darwin':
+    torch._C._jit_set_profiling_mode(False)
+    torch._C._jit_set_profiling_executor(False)
+    torch._C._jit_override_can_fuse_on_cpu(True)
+    torch._C._jit_override_can_fuse_on_gpu(True)
 
 logger = logging.get_logger(__name__)
 
@@ -621,13 +621,11 @@ class GLMBlock(torch.nn.Module):
 
         # Layer norm at the begining of the transformer layer.
         # [seq_len, batch, hidden_size]
-        # attention_input = self.input_layernorm(hidden_states)
-        attention_input = self.input_layernorm(hidden_states.to(self.input_layernorm.weight.dtype))
+        attention_input = self.input_layernorm(hidden_states)
 
         # Self attention.
         attention_outputs = self.attention(
-            attention_input.to(self.attention.query_key_value.weight.dtype),
-            # attention_input,
+            attention_input,
             position_ids,
             attention_mask=attention_mask,
             layer_id=layer_id,
@@ -644,11 +642,10 @@ class GLMBlock(torch.nn.Module):
         alpha = (2 * self.num_layers) ** 0.5
         hidden_states = attention_input * alpha + attention_output
 
-        mlp_input = self.post_attention_layernorm(hidden_states.to(self.input_layernorm.weight.dtype))
-        # mlp_input = self.post_attention_layernorm(hidden_states)
+        mlp_input = self.post_attention_layernorm(hidden_states)
 
         # MLP.
-        mlp_output = self.mlp(mlp_input.to(self.mlp.dense_h_to_4h.weight.dtype))
+        mlp_output = self.mlp(mlp_input)
 
         # Second residual connection.
         output = mlp_input * alpha + mlp_output
@@ -1015,8 +1012,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
                 all_self_attentions = all_self_attentions + (layer_ret[2 if use_cache else 1],)
 
         # Final layer norm.
-        hidden_states = self.final_layernorm(hidden_states.to(self.final_layernorm.weight.dtype))
-        # hidden_states = self.final_layernorm(hidden_states)
+        hidden_states = self.final_layernorm(hidden_states)
 
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
@@ -1205,8 +1201,7 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
 
         hidden_states = transformer_outputs[0]
 
-        lm_logits = self.lm_head(hidden_states.to(self.lm_head.weight.dtype)).permute(1, 0, 2).contiguous()
-        # lm_logits = self.lm_head(hidden_states).permute(1, 0, 2).contiguous()
+        lm_logits = self.lm_head(hidden_states).permute(1, 0, 2).contiguous()
 
         loss = None
         if labels is not None:
@@ -1269,14 +1264,14 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
         return response
 
     @torch.no_grad()
-    def chat(self, tokenizer, query: str, history: List[Tuple[str, str]] = None, max_new_tokens: int = 2048, num_beams=1,
+    def chat(self, tokenizer, query: str, history: List[Tuple[str, str]] = None, max_length: int = 2048, num_beams=1,
              do_sample=True, top_p=0.7, temperature=0.95, logits_processor=None, **kwargs):
         if history is None:
             history = []
         if logits_processor is None:
             logits_processor = LogitsProcessorList()
         logits_processor.append(InvalidScoreLogitsProcessor())
-        gen_kwargs = {"max_new_tokens": max_new_tokens, "num_beams": num_beams, "do_sample": do_sample, "top_p": top_p,
+        gen_kwargs = {"max_length": max_length, "num_beams": num_beams, "do_sample": do_sample, "top_p": top_p,
                       "temperature": temperature, "logits_processor": logits_processor, **kwargs}
         if not history:
             prompt = query
@@ -1295,14 +1290,14 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
         return response, history
 
     @torch.no_grad()
-    def stream_chat(self, tokenizer, query: str, history: List[Tuple[str, str]] = None, max_new_tokens: int = 2048,
+    def stream_chat(self, tokenizer, query: str, history: List[Tuple[str, str]] = None, max_length: int = 2048,
                     do_sample=True, top_p=0.7, temperature=0.95, logits_processor=None, **kwargs):
         if history is None:
             history = []
         if logits_processor is None:
             logits_processor = LogitsProcessorList()
         logits_processor.append(InvalidScoreLogitsProcessor())
-        gen_kwargs = {"max_new_tokens": max_new_tokens, "do_sample": do_sample, "top_p": top_p,
+        gen_kwargs = {"max_length": max_length, "do_sample": do_sample, "top_p": top_p,
                       "temperature": temperature, "logits_processor": logits_processor, **kwargs}
         if not history:
             prompt = query

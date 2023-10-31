@@ -16,7 +16,7 @@ EPOCHS = 3  # default=3  # we don't always need 3 tbh
 # LORA_R = 32
 LORA_DROPOUT = 0.05
 LORA_ALPHA = 16
-LORA_R = 8
+LORA_R = 8    
 SAVE_STEPS = 382
 VAL_SET_SIZE = 0
 MAX_LENGTH_Q = 256 - 2  # default=128 - 2
@@ -29,7 +29,7 @@ TARGET_MODULES = ["q_proj",
                   ]
 
 
-PATH_MODEL_PRETRAIN = ""
+PATH_MODEL_PRETRAIN = "/root/autodl-tmp/Llama-2-7b-chat-hf"
 REPO_ID = "decapoda-research/llama-7b-hf"
 PATH_MODEL_PRETRAIN = PATH_MODEL_PRETRAIN if PATH_MODEL_PRETRAIN else REPO_ID
 DATA_PATH = "../dataset/alpaca_gpt4_data_zh.json"
