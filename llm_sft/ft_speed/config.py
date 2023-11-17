@@ -56,46 +56,41 @@ DEEPSPEED_CONF_2 = {
     #     "min_loss_scale": 1
     # },
     #
-    "optimizer": {
-        "type": "AdamW",
-        "params": {
-            "lr": LEARNING_RATE,
-            "betas": [0.9, 0.999],
-            "eps": 1e-5,
-            "weight_decay": 5e-4,
-        }
-    },
-    #
-    # "scheduler": {
-    #     "type": "WarmupLR",
+    # "optimizer": {
+    #     "type": "AdamW",
     #     "params": {
-    #         "warmup_min_lr": 0,
-    #         "warmup_max_lr": LEARNING_RATE,
-    #         "warmup_num_steps": WARMUP_NUM_STEPS,
+    #         "lr": LEARNING_RATE,
+    #         "betas": [0.9, 0.999],
+    #         "eps": 1e-8,
+    #         "weight_decay": 5e-4,
     #     }
     # },
-
+    # "zero_optimization": {
+    #     "stage": 2,
+    #     # 可以看到，除了和stage2一样，有offload_optimizer参数之外，stage3还有一个offload_param参数。即，将模型参数进行划分。
+    #     "offload_optimizer": {
+    #         "device": "cpu",
+    #         "pin_memory": False
+    #     },
+    #     "allgather_partitions": True,
+    #     "allgather_bucket_size": 2e8,
+    #     # 另外一个需要提到的参数是overlap_comm。简单地理解，它控制着多个memory上进程之间通信的buffer的大小。
+    #     # 这个值越大，进程之间通信越快，模型训练速度也会提升，
+    #     # 但相应的显存占用也会变大；反之亦然。因此，overlap_comm也是一个需要进行一定权衡的参数。
+    #     "overlap_comm": True,
+    #     "reduce_scatter": True,
+    #     "reduce_bucket_size": 2e8,
+    #     "contiguous_gradients": True
+    # },
     "zero_optimization": {
-        "stage": 2,
-        # 可以看到，除了和stage2一样，有offload_optimizer参数之外，stage3还有一个offload_param参数。即，将模型参数进行划分。
-        "offload_optimizer": {
-            "device": "cpu",
-            "pin_memory": False
-        },
-        "allgather_partitions": True,
-        "allgather_bucket_size": 2e8,
-        # 另外一个需要提到的参数是overlap_comm。简单地理解，它控制着多个memory上进程之间通信的buffer的大小。
-        # 这个值越大，进程之间通信越快，模型训练速度也会提升，
-        # 但相应的显存占用也会变大；反之亦然。因此，overlap_comm也是一个需要进行一定权衡的参数。
+        "stage": 3,
         "overlap_comm": True,
-        "reduce_scatter": True,
-        "reduce_bucket_size": 2e8,
-        "contiguous_gradients": True
+        "stage3_gather_16bit_weights_on_model_save": True
     },
-    "train_micro_batch_size_per_gpu": MICRO_BATCH_SIZE,
-    "gradient_accumulation_steps": int(BATCH_SIZE//MICRO_BATCH_SIZE),
+    "train_micro_batch_size_per_gpu": "auto",
+    "gradient_accumulation_steps": "auto",
     "gradient_clipping": MAX_GRAD_NORM,
-    "train_batch_size": BATCH_SIZE,
+    "train_batch_size": "auto",
     "steps_per_print": STEPS_PER_PRINT,
     "wall_clock_breakdown": False
 }
