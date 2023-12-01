@@ -6,14 +6,16 @@
 
 
 import random
+import copy
 import time
 import sys
 import os
 path_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 print(path_root)
 sys.path.append(path_root)
-from llm_sft.ft_chatglm.config import CUDA_VISIBLE_DEVICES, USE_TORCH, CPU_NUMS  # from config
+from chatglm2_6b.ft_chatglm2.config import CUDA_VISIBLE_DEVICES, USE_TORCH, CPU_NUMS  # from config
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:3072"
+CUDA_VISIBLE_DEVICES = "-1"
 os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 os.environ["USE_TORCH"] = USE_TORCH
 os.environ["OMP_NUM_THREADS"] = CPU_NUMS  # export OMP_NUM_THREADS=1
@@ -28,23 +30,14 @@ import torch
 
 # from transformers import ChatGLMForConditionalGeneration, ChatGLMConfig
 # from transformers import ChatGLMTokenizer
-from llm_sft.models.chatglm.modeling_chatglm import ChatGLMForConditionalGeneration, ChatGLMConfig
-from llm_sft.models.chatglm.tokenization_chatglm import ChatGLMTokenizer
-from llm_sft.ft_chatglm.config import PATH_MODEL_PRETRAIN, DATA_PATH, MODEL_SAVE_DIR, REPO_ID
-from llm_sft.ft_chatglm.config import MICRO_BATCH_SIZE, BATCH_SIZE, GRADIENT_ACCUMULATION_STEPS
-from llm_sft.ft_chatglm.config import LEARNING_RATE, EPOCHS, SAVE_STEPS, VAL_SET_SIZE, TARGET_MODULES
-from llm_sft.ft_chatglm.config import MAX_LENGTH_Q, MAX_LENGTH_A, MAX_LENGTH_QA
-from llm_sft.ft_chatglm.config import LORA_DROPOUT, LORA_ALPHA, LORA_R
-from llm_sft.ft_chatglm.config import USE_CUDA
-
-
-# device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
-world_size = int(os.environ.get("WORLD_SIZE", 1))
-ddp = world_size != 1
-device_map = "auto"
-# USE_CUDA = True
-print(device_map)
-print(ddp)
+from chatglm2_6b.models.chatglm2.modeling_chatglm import ChatGLMForConditionalGeneration, ChatGLMConfig
+from chatglm2_6b.models.chatglm2.tokenization_chatglm import ChatGLMTokenizer
+from chatglm2_6b.ft_chatglm2.config import PATH_MODEL_PRETRAIN, DATA_PATH, MODEL_SAVE_DIR, REPO_ID
+from chatglm2_6b.ft_chatglm2.config import MICRO_BATCH_SIZE, BATCH_SIZE, GRADIENT_ACCUMULATION_STEPS
+from chatglm2_6b.ft_chatglm2.config import LEARNING_RATE, EPOCHS, SAVE_STEPS, VAL_SET_SIZE, TARGET_MODULES
+from chatglm2_6b.ft_chatglm2.config import MAX_LENGTH_Q, MAX_LENGTH_A, MAX_LENGTH_QA
+from chatglm2_6b.ft_chatglm2.config import LORA_DROPOUT, LORA_ALPHA, LORA_R
+from chatglm2_6b.ft_chatglm2.config import USE_CUDA
 
 
 def load_model_state(model, model_save_dir="./", model_name="adapter_model.bin", device="cpu"):
@@ -56,6 +49,19 @@ def load_model_state(model, model_save_dir="./", model_name="adapter_model.bin",
         model = get_peft_model(model, peft_config)
         state_dict = torch.load(path_model, map_location=torch.device(device))
         # print(state_dict.keys())
+        state_dict = {k.replace("_orig_mod.", "")
+                      .replace(".lora_A.weight", ".lora_A.default.weight")
+                      .replace(".lora_B.weight", ".lora_B.default.weight")
+                      : v for k, v in state_dict.items()}
+        print(state_dict.keys())
+        print("#"*128)
+        ### 排查不存在model.keys的 state_dict.key
+        name_dict = {name: 0 for name, param in model.named_parameters()}
+        print(name_dict.keys())
+        print("#"*128)
+        for state_dict_key in state_dict.keys():
+            if state_dict_key not in name_dict:
+                print("{} is not exist!".format(state_dict_key))
         model.load_state_dict(state_dict, strict=False)
         # model.to(device)
         print("******model loaded success******")
@@ -128,58 +134,67 @@ def print_named_parameters(model, use_print_data=True):
         if param.requires_grad:
             trainable_params += num_params
     print(f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}")
-def generate_prompt(data_point):
+def generate_prompt(data_point, is_logger=False):
     # sorry about the formatting disaster gotta move fast
-    if data_point["input"]:
-        text_1, text_2 = f"""下面是一条指令。请根据问题，并编写一个准确的回答，以适当地完成指令。
-        \n###指令：\n{data_point["instruction"]}
-        \n###问题：\n{data_point["input"]}
-        \n###回答：\n""", f"""{data_point["output"]}"""
-    else:
-        text_1, text_2 = f"""下面是一条指令。请编写一个准确的回答，以适当地完成指令。
-        \n###指令：\n{data_point["instruction"]}
-        \n###回答：\n""", f"""{data_point["output"]}"""
-
-    x = tokenizer.encode(text_1.replace(" ", ""))
-    y = tokenizer.encode(text_2.replace(" ", ""))
+    text_1 = f"[Round 1]\n\n问：{data_point.get('instruction', '')}\t{data_point.get('input', '')}\n\n答："
+    # text_1 = f"问：{data_point.get('instruction', '')}{data_point.get('input', '')}\n\n答："
+    text_2 = f"{data_point.get('output', '')}"
+    # end with gMASK, <sop>
+    x = tokenizer.encode(text_1)
+    y = tokenizer.encode(text_2)
+    if y and y[0] == ID_gMASK:  # 如果以gMASK, <sop>开头则剔除(防止以后改了)
+        y = y[2:]
     if len(x) + len(y) > (MAX_LENGTH_Q + MAX_LENGTH_A):
         x = x[:MAX_LENGTH_Q]
         y = y[:MAX_LENGTH_A]
     if not x:
-        y = [ID_PAD, ID_BOS]
-    if x[-1] != ID_BOS:
-        x += [ID_BOS]
+        x = [ID_gMASK, ID_SOP, ID_PAD, ID_gMASK, ID_SOP]
+    if x[-1] != ID_SOP:
+        x += [ID_gMASK, ID_SOP]
     if not y:
         y = [ID_PAD, ID_EOS]
     if y and y[-1] != ID_EOS:
         y += [ID_EOS]
-    return {"input_ids": x,
-            "labels": y}
+    out = {"input_ids": x, "labels": y}
+    if is_logger:
+        print(text_1)
+        print(text_2)
+        print(out)
+    return out
 
 
-model = ChatGLMForConditionalGeneration.from_pretrained(PATH_MODEL_PRETRAIN)
 tokenizer = ChatGLMTokenizer.from_pretrained(PATH_MODEL_PRETRAIN)
-print("load ChatGLMForConditionalGeneration ok")
+tokenizer.padding_side = "left"  # Allow batched inference
+# ID_gMASK = 64790
+# ID_BOS = 64792
+# ID_EOS = 64793
+# ID_MASK = 64789
+# ID_PAD = 0
+ID_MASK = 64789
+ID_gMASK = 64790
+ID_sMASK = 64791
+ID_SOP = 64792
+ID_EOP = 64793
+ID_BOS = 1
+ID_EOS = 2
+ID_PAD = 0
+model = ChatGLMForConditionalGeneration.from_pretrained(PATH_MODEL_PRETRAIN)
+print("load LLM ok")
 model = load_model_state(model=model, model_save_dir=MODEL_SAVE_DIR)
 print("load peft ok")
-# model = prepare_model_for_half_training(model,
-#         use_gradient_checkpointing=True,
-#         output_embedding_layer_name="lm_head",
-#         layer_norm_names=["post_attention_layernorm",
-#                           "input_layernorm",
-#                           "final_layernorm"
-#                           ],
-#         )
+model = prepare_model_for_half_training(model,
+        use_gradient_checkpointing=False,
+        output_embedding_layer_name="lm_head",
+        layer_norm_names=["post_attention_layernorm",
+                          "final_layernorm",
+                          "input_layernorm",
+                          ],
+        )
 if USE_CUDA:
     model = model.half().cuda()
 else:
     model = model.bfloat16()
 print_named_parameters(model, use_print_data=True)
-ID_gMASK = 130001
-ID_BOS = 130004
-ID_EOS = 130005
-ID_MASK = 130000
-ID_PAD = 3
 
 
 def predict(data_dict):
@@ -190,14 +205,20 @@ def predict(data_dict):
     input_ids = torch.tensor([input_ids], dtype=torch.long)
     if USE_CUDA:
         input_ids = input_ids.cuda()
+    # input_dict = data_collator([prompt_dict])
+    # if USE_CUDA:
+    #     input_dict = {k:v.cuda() for k,v in input_dict.items()}
+    # print(input_dict)
     generation_config = GenerationConfig(
-        temperature=0.95,
-        top_p=0.75,
+        temperature=0.8,
+        top_p=0.8,
         top_k=50,
         num_beams=1,
         do_sample=True,
         penalty_alpha=1.0,
         max_new_tokens=512,
+        pad_token_id=ID_PAD,
+        eos_token_id=ID_EOS,
     )
     with torch.no_grad():
         generation_output = model.generate(
@@ -206,6 +227,7 @@ def predict(data_dict):
             return_dict_in_generate=True,
             output_scores=True,
             # max_new_tokens=512,
+            # **input_dict
         )
     s = generation_output.sequences[0]
     output = tokenizer.decode(s)
@@ -215,12 +237,17 @@ def predict(data_dict):
     # output = output.split("答：")[-1]
     return output
 
+def predict_2(data_point):
+    text = f"{data_point.get('instruction', '')}{data_point.get('input', '')}"
+    output = model.chat(tokenizer, text)
+    return output
+
 
 
 if __name__ == '__main__':
-    data_dict = {"instruction": "解释为什么下面的分数等于 1/4",
-                 "input": "解释为什么下面的分数等于 1/4，4/16",
-                 "output": "分数 4/16 等于 1/4，因为分子和分母都可以被 4 整除。将顶部和底部数字都除以 4 得到分数 1/4。"
+    data_dict = {"instruction": "Please combine the question and score the student's response. The scoring range is 0 to 4 points.",
+                 "input": "background:Mateo wants an automatic door that opens to the next group when there is enough capacity inside of the store. The automated door has a sensor that indicates is connected to sensors that can detect the number of customers in the store and the size of the group closest to the door. Mateo wants the door to work for a variety of configurations of customer groups inside and outside of his shop. \u201cI want to serve as many customers as possible and minimize their wait time\u201d, he says.;question:[a] What pieces of information might your team need to know to design this program?\n;answer:13 people inside the store.A group of 5 people is the next in line",
+                 "output": "1"
                  }
     res = predict(data_dict)
     print(res)
@@ -236,7 +263,7 @@ if __name__ == '__main__':
                 print("clear ok")
                 continue
             else:
-                ques_dict = {"instruction": ques, "input": "", "output": ""}
+                ques_dict = {"instruction": "Please combine the question and score the student's response. The scoring range is 0 to 4 points.", "input": ques, "output": ""}
                 res = predict(ques_dict)
                 print(res)
         except Exception as e:

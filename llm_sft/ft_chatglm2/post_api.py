@@ -16,7 +16,7 @@ import os
 path_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 print(path_root)
 sys.path.append(path_root)
-from llm_sft.ft_chatglm.config import CUDA_VISIBLE_DEVICES, USE_TORCH, CPU_NUMS  # from config
+from chatglm2_6b.ft_chatglm2.config import CUDA_VISIBLE_DEVICES, USE_TORCH, CPU_NUMS  # from config
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:3072"
 os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_VISIBLE_DEVICES
 os.environ["USE_TORCH"] = USE_TORCH
@@ -30,9 +30,8 @@ os.environ["NUMEXPR_NUM_THREADS"] = CPU_NUMS  # export NUMEXPR_NUM_THREADS=1
 from peft import prepare_model_for_int8_training
 from peft import LoraConfig, get_peft_model
 from transformers import GenerationConfig
-from pydantic import BaseModel
-from rouge import Rouge  # pip install rouge
-from tqdm import tqdm
+# from rouge import Rouge  # pip install rouge
+# from tqdm import tqdm
 import torch
 
 from pydantic import BaseModel
@@ -41,13 +40,14 @@ import time
 
 # from transformers import ChatGLMForConditionalGeneration, ChatGLMConfig
 # from transformers import ChatGLMTokenizer
-from llm_sft.models.chatglm.modeling_chatglm import ChatGLMForConditionalGeneration, ChatGLMConfig
-from llm_sft.models.chatglm.tokenization_chatglm import ChatGLMTokenizer
-from llm_sft.ft_chatglm.config import PATH_MODEL_PRETRAIN, DATA_PATH, MODEL_SAVE_DIR, REPO_ID
-from llm_sft.ft_chatglm.config import MICRO_BATCH_SIZE, BATCH_SIZE, GRADIENT_ACCUMULATION_STEPS
-from llm_sft.ft_chatglm.config import LEARNING_RATE, EPOCHS, SAVE_STEPS, VAL_SET_SIZE, TARGET_MODULES
-from llm_sft.ft_chatglm.config import MAX_LENGTH_Q, MAX_LENGTH_A, MAX_LENGTH_QA
-from llm_sft.ft_chatglm.config import LORA_DROPOUT, LORA_ALPHA, LORA_R
+from chatglm2_6b.models.chatglm2.modeling_chatglm import ChatGLMForConditionalGeneration, ChatGLMConfig
+from chatglm2_6b.models.chatglm2.tokenization_chatglm import ChatGLMTokenizer
+from chatglm2_6b.ft_chatglm2.config import PATH_MODEL_PRETRAIN, DATA_PATH, MODEL_SAVE_DIR, REPO_ID
+from chatglm2_6b.ft_chatglm2.config import MICRO_BATCH_SIZE, BATCH_SIZE, GRADIENT_ACCUMULATION_STEPS
+from chatglm2_6b.ft_chatglm2.config import LEARNING_RATE, EPOCHS, SAVE_STEPS, VAL_SET_SIZE, TARGET_MODULES
+from chatglm2_6b.ft_chatglm2.config import MAX_LENGTH_Q, MAX_LENGTH_A, MAX_LENGTH_QA
+from chatglm2_6b.ft_chatglm2.config import LORA_DROPOUT, LORA_ALPHA, LORA_R
+from chatglm2_6b.ft_chatglm2.config import USE_CUDA
 
 
 app = FastAPI()  # 日志文件名,为启动时的日期, 全局日志格式
@@ -59,15 +59,6 @@ logger = logging.getLogger("ft-chatglm")
 console = logging.StreamHandler()
 console.setLevel(logger_level)
 logger.addHandler(console)
-
-
-# device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
-world_size = int(os.environ.get("WORLD_SIZE", 1))
-ddp = world_size != 1
-device_map = "auto"
-USE_CUDA = True
-print(device_map)
-print(ddp)
 
 
 def save_model_state(model, config=None, model_save_dir="./", model_name="adapter_model.bin"):
@@ -92,7 +83,19 @@ def load_model_state(model, model_save_dir="./", model_name="adapter_model.bin",
         peft_config.inference_mode = True
         model = get_peft_model(model, peft_config)
         state_dict = torch.load(path_model, map_location=torch.device(device))
+        state_dict = {k.replace("_orig_mod.", "")
+                      .replace(".lora_A.weight", ".lora_A.default.weight")
+                      .replace(".lora_B.weight", ".lora_B.default.weight")
+                      : v for k, v in state_dict.items()}
         print(state_dict.keys())
+        print("#"*128)
+        ### 排查不存在model.keys的 state_dict.key
+        name_dict = {name: 0 for name, param in model.named_parameters()}
+        print(name_dict.keys())
+        print("#"*128)
+        for state_dict_key in state_dict.keys():
+            if state_dict_key not in name_dict:
+                print("{} is not exist!".format(state_dict_key))
         model.load_state_dict(state_dict, strict=False)
         # model.to(device)
         print("******model loaded success******")
@@ -165,103 +168,51 @@ def load_json(path: str, encoding: str="utf-8"):
         model_json = json.load(fj)
         fj.close()
     return model_json
-def generate_prompt(data_point):
-    """  构建prompt   """
-    if data_point["input"]:
-        text_1, text_2 = f"""下面是一条指令。请根据问题，并编写一个准确的回答，以适当地完成指令。
-        \n###指令：\n{data_point["instruction"]}
-        \n###问题：\n{data_point["input"]}
-        \n###回答：\n""", f"""{data_point["output"]}"""
-    else:
-        text_1, text_2 = f"""下面是一条指令。请编写一个准确的回答，以适当地完成指令。
-        \n###指令：\n{data_point["instruction"]}
-        \n###回答：\n""", f"""{data_point["output"]}"""
-
-    x = tokenizer.encode(text_1.replace(" ", ""))
-    y = tokenizer.encode(text_2.replace(" ", ""))
+def generate_prompt(data_point, is_logger=False):
+    # sorry about the formatting disaster gotta move fast
+    text_1 = f"[Round 1]\n\n问：{data_point.get('instruction', '')}\t{data_point.get('input', '')}\n\n答："
+    # text_1 = f"问：{data_point.get('instruction', '')}{data_point.get('input', '')}\n\n答："
+    text_2 = f"{data_point.get('output', '')}"
+    # end with gMASK, <sop>
+    x = tokenizer.encode(text_1)
+    y = tokenizer.encode(text_2)
+    if y and y[0] == ID_gMASK:  # 如果以gMASK, <sop>开头则剔除(防止以后改了)
+        y = y[2:]
     if len(x) + len(y) > (MAX_LENGTH_Q + MAX_LENGTH_A):
         x = x[:MAX_LENGTH_Q]
         y = y[:MAX_LENGTH_A]
     if not x:
-        y = [ID_PAD, ID_BOS]
-    if x[-1] != ID_BOS:
-        x += [ID_BOS]
+        x = [ID_gMASK, ID_SOP, ID_PAD, ID_gMASK, ID_SOP]
+    if x[-1] != ID_SOP:
+        x += [ID_gMASK, ID_SOP]
     if not y:
         y = [ID_PAD, ID_EOS]
     if y and y[-1] != ID_EOS:
         y += [ID_EOS]
-    return {"input_ids": x,
-            "labels": y}
-def data_collator(batch):
-    # there's probably a way to do this with the tokenizer settings
-    def get_position_ids(seq, bos_token_id, gmask=True, position_encoding_2d=True):
-        """  code from model_chatglm.py  """
-        # context_length = seq.index(bos_token_id) + 1
-        context_length = len(seq)
-        position_ids = torch.arange(context_length, dtype=torch.long)
-        if position_encoding_2d:
-            seq_length = seq.index(bos_token_id)
-            if not gmask:
-                mask_position = seq_length - 1
-                position_ids[seq_length:] = mask_position
-            block_position_ids = torch.cat((
-                torch.zeros(seq_length, dtype=torch.long),
-                torch.arange(context_length - seq_length, dtype=torch.long) + 1
-            ))
-            position_ids = torch.stack((position_ids, block_position_ids), dim=0)
-        else:
-            if not gmask:
-                seq_length = seq.index(bos_token_id)
-                mask_position = seq_length - 1
-                position_ids[context_length - 1:] = mask_position
-        # position_ids = position_ids.unsqueeze(0)
-        return position_ids
-
-    def get_masks(seq, bos_token_id):
-        """  code from model_chatglm.py  """
-        context_length = seq.index(bos_token_id)
-        attention_mask = torch.ones((1, len(seq), len(seq)))
-        attention_mask.tril_()
-        attention_mask[..., :context_length] = 1
-        # attention_mask.unsqueeze_(1)
-        attention_mask = (attention_mask < 0.5).bool()
-        return attention_mask
-
-    len_max_batch = [len(batch[i].get("input_ids")) + len(batch[i].get("labels")) + 1
-                     for i in range(len(batch))]
-    len_max_batch = min(MAX_LENGTH_QA, max(len_max_batch))
-    batch_attention_mask = []
-    batch_position_ids = []
-    batch_input_ids = []
-    batch_labels = []
-    for ba in batch:
-        ## 382, 383
-        x, y = ba.get("input_ids"), ba.get("labels")
-        len_padding = len_max_batch - len(x) - len(y) 
-        labels = [-100] * len(x) + y + [-100] * len_padding
-        input_ids = x + y + [ID_PAD] * (len_padding)
-        tensor_position_ids = get_position_ids(input_ids, ID_BOS, gmask=True,
-                                               position_encoding_2d=True)
-        tensor_input_ids = torch.tensor(input_ids, dtype=torch.long)
-        tensor_labels = torch.tensor(labels, dtype=torch.long)
-        tensor_attention_mask = get_masks(input_ids, ID_BOS)
-        batch_attention_mask.append(tensor_attention_mask)
-        batch_position_ids.append(tensor_position_ids)
-        batch_input_ids.append(tensor_input_ids)
-        batch_labels.append(tensor_labels)
-    # print(batch_attention_mask)
-    batch_attention_mask = torch.stack(batch_attention_mask)
-    batch_position_ids = torch.stack(batch_position_ids)
-    batch_input_ids = torch.stack(batch_input_ids)
-    batch_labels = torch.stack(batch_labels)
-    input_dict = {"attention_mask": batch_attention_mask,
-                  "position_ids": batch_position_ids,
-                  "input_ids": batch_input_ids,
-                  "labels": batch_labels,
-                  }
-    return input_dict
+    out = {"input_ids": x, "labels": y}
+    if is_logger:
+        print(text_1)
+        print(text_2)
+        print(out)
+    return out
 
 
+tokenizer = ChatGLMTokenizer.from_pretrained(PATH_MODEL_PRETRAIN)
+# tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "left"  # Allow batched inference
+# ID_gMASK = 64790
+# ID_BOS = 64792
+# ID_EOS = 64793
+# ID_MASK = 64789
+# ID_PAD = 2
+ID_MASK = 64789
+ID_gMASK = 64790
+ID_sMASK = 64791
+ID_SOP = 64792
+ID_EOP = 64793
+ID_BOS = 1
+ID_EOS = 2
+ID_PAD = 0
 model = ChatGLMForConditionalGeneration.from_pretrained(PATH_MODEL_PRETRAIN)
 # model.gradient_checkpointing_enable()
 # model.enable_input_require_grads()
@@ -269,21 +220,15 @@ model = ChatGLMForConditionalGeneration.from_pretrained(PATH_MODEL_PRETRAIN)
 # model.config.use_cache = False
 # model.model_parallel = False
 print_named_parameters(model, True)
-tokenizer = ChatGLMTokenizer.from_pretrained(PATH_MODEL_PRETRAIN, add_eos_token=True)
-ID_gMASK = 130001
-ID_BOS = 130004
-ID_EOS = 130005
-ID_MASK = 130000
-ID_PAD = 3
 model = load_model_state(model=model, model_save_dir=MODEL_SAVE_DIR)
-# model = prepare_model_for_half_training(model,
-#         use_gradient_checkpointing=True,
-#         output_embedding_layer_name="lm_head",
-#         layer_norm_names=["post_attention_layernorm",
-#                           "input_layernorm",
-#                           "final_layernorm"
-#                           ],
-#         )
+model = prepare_model_for_half_training(model,
+        use_gradient_checkpointing=False,
+        output_embedding_layer_name="lm_head",
+        layer_norm_names=["post_attention_layernorm",
+                          "final_layernorm",
+                          "input_layernorm",
+                          ],
+        )
 if USE_CUDA:
     model = model.half().cuda()
 else:
@@ -318,6 +263,10 @@ def predict(data_point, generation_config):
     input_ids = torch.tensor([input_ids], dtype=torch.long)
     if USE_CUDA:
         input_ids = input_ids.cuda()
+    # input_dict = data_collator([prompt_dict])
+    # if USE_CUDA:
+    #     input_dict = {k:v.cuda() for k,v in input_dict.items()}
+    # print(input_dict)
     generation_config = GenerationConfig(**generation_config)
     with torch.no_grad():
         generation_output = model.generate(
@@ -337,13 +286,12 @@ class Item(BaseModel):
     instruction: str = "完成下面的问答"
     text: str = "1+1="
     penalty_alpha: float = 1.0
-    max_new_tokens: int = 512
-    temperature: float = 0.95  # 0.95  # 0.35  # 0.95
+    max_new_tokens: int = 128
+    temperature: float = 0.8  # 0.95  # 0.35  # 0.95
     do_sample: bool = True
     num_beams: int = 1
-    top_p: float = 0.7  # 0.75
+    top_p: float = 0.8  # 0.75
     top_k: int = 50
-
 
 @app.post("/nlg/text_generate")
 def text_generate(request_data: Item):
@@ -370,12 +318,15 @@ def text_generate(request_data: Item):
                          "do_sample": do_sample,
                          "penalty_alpha": penalty_alpha,
                          "max_new_tokens": max_new_tokens,
+                         "pad_token_id": ID_PAD,
+                         "eos_token_id": ID_EOS,
+
                          }
     try:  # 数据预处理, 模型预测
         response = predict(data_point, generation_config)
     except Exception as e:
         logger.info(traceback.print_exc())
-        response = "[EOP]"
+        response = "<eop>"
     return response
 
 
@@ -393,4 +344,41 @@ if __name__ == '__main__':
 # |myz|
 
 可以在浏览器生成界面直接访问: http://localhost:8032/docs
+
+
+
+{'instruction': '', 'text': '类型#裙*颜色#蓝色*风格#清新*图案#蝴蝶结', 'penalty_alpha': 1.0, 'max_new_tokens': 128, 'temperature': 0.8, 'do_sample': True, 'num_beams': 1, 'top_p': 0.8, 'top_k': 50}
+tensor([[64790, 64792,   790, 30951,   517, 30910, 30939, 30996,    13,    13,
+         54761, 31211, 33467, 31010, 56778, 30998, 33692, 31010, 35798, 30998,
+         32799, 31010, 37785, 30998, 37505, 31010, 39424, 54784,    13,    13,
+         55437, 31211]])
+tensor([64790, 64792,   790, 30951,   517, 30910, 30939, 30996,    13,    13,
+        54761, 31211, 33467, 31010, 56778, 30998, 33692, 31010, 35798, 30998,
+        32799, 31010, 37785, 30998, 37505, 31010, 39424, 54784,    13,    13,
+        55437, 31211, 30910, 37785, 55325, 59585, 54530, 35798, 54712, 31123,
+        36350, 34317, 54530, 35642, 31123, 39424, 54784, 54530, 42128, 31123,
+        54772, 44936, 54664, 33804, 34317, 31155,     2])
+[Round 1]
+
+问：类型#裙*颜色#蓝色*风格#清新*图案#蝴蝶结
+
+答： 清新减讷的蓝色系，充满了浪漫的气息，蝴蝶结的点缀，让裙子更显得浪漫。
+
+
+{'instruction': '', 'text': '类型#裤*材质#羊毛', 'penalty_alpha': 1.0, 'max_new_tokens': 128, 'temperature': 0.95, 'do_sample': True, 'num_beams': 1, 'top_p': 0.7, 'top_k': 50}
+tensor([[64790, 64792,   790, 30951,   517, 30910, 30939, 30996,    13,    13,
+         54761, 31211, 33467, 31010, 56532, 30998, 38317, 31010, 55944, 55474,
+            13,    13, 55437, 31211]])
+tensor([64790, 64792,   790, 30951,   517, 30910, 30939, 30996,    13,    13,
+        54761, 31211, 33467, 31010, 56532, 30998, 38317, 31010, 55944, 55474,
+           13,    13, 55437, 31211, 30910, 33730, 33481, 47108, 44848, 55944,
+        55474, 56532, 31123, 32195, 55906, 55944, 55474, 46839, 31123, 35405,
+        21108, 33894, 31155,     2])
+[Round 1]
+
+问：类型#裤*材质#羊毛
+
+答： 这款时尚舒适的男士羊毛裤，采用纯羊毛面料，穿着 lbs舒适。
+
+
 """
